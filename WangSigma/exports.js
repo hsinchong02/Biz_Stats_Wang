@@ -22,7 +22,22 @@ async function word(runs){
  }
  const doc=new D.Document({creator:'WangSigma',title:'Business Statistics Results',styles:{default:{document:{run:{font:'Calibri',size:22}},title:{run:{font:'Calibri',color:'000000',size:40,bold:true}},heading1:{run:{color:'183B45',size:30,bold:true}},heading2:{run:{color:'183B45',size:24,bold:true}}}},sections:[{properties:{page:{size:{width:12240,height:15840},margin:{top:720,right:720,bottom:720,left:720}}},children}]});return await D.Packer.toBlob(doc);
 }
-async function readExcel(file){if(file.size>20000000)throw Error('Workbook imports are limited to 20 MB.');const book=new ExcelJS.Workbook();await book.xlsx.load(await file.arrayBuffer());return book;}
-function worksheetRows(sheet){const rows=[],issues=[];if(sheet.rowCount>10000||sheet.columnCount>10000)throw Error('The maximum number of rows or columns cannot exceed 10,000.');if(sheet.rowCount*sheet.columnCount>250000)throw Error('This worksheet exceeds the 250,000-cell import limit. Copy a smaller range or use CSV.');sheet.eachRow({includeEmpty:true},(row,r)=>{const cells=[];for(let c=1;c<=sheet.columnCount;c++){const v=row.getCell(c).value;let result=v;if(v&&typeof v==='object'){if(v instanceof Date)result={kind:'date',value:v.toISOString()};else if('formula'in v||'sharedFormula'in v){if(v.result===undefined){issues.push(row.getCell(c).address);result={error:'#NO_CACHED_VALUE'};}else result=v.result;}else if(v.error)result={error:v.error};else if(v.richText)result=v.richText.map(x=>x.text).join('');else if(v.text)result=v.text;else result=String(v);}cells.push(result??'');}rows[r-1]=cells;});return {rows,issues};}
+async function readExcel(file){
+ if(file.size>20000000)throw Error('Workbook imports are limited to 20 MB.');
+ const bytes=await file.arrayBuffer();let book=new ExcelJS.Workbook();
+ try{await book.xlsx.load(bytes);return book;}catch(original){
+  // ExcelJS cannot parse prefixed SpreadsheetML element names in some valid workbooks.
+  try{const zip=await JSZip.loadAsync(bytes);let changed=false;
+   for(const [name,entry] of Object.entries(zip.files)){if(!name.endsWith('.xml')||entry.dir)continue;let xml=await entry.async('string');
+    const match=xml.match(/xmlns:([A-Za-z_][\w.-]*)=(['"])http:\/\/schemas\.openxmlformats\.org\/spreadsheetml\/2006\/main\2/);
+    if(!match)continue;const prefix=match[1].replace(/\./g,'[.]');
+    xml=xml.replace(match[0],'xmlns='+match[2]+'http://schemas.openxmlformats.org/spreadsheetml/2006/main'+match[2]);
+    xml=xml.replace(new RegExp('(<\\/?)'+prefix+':','g'),'$1');zip.file(name,xml);changed=true;
+   }
+   if(!changed)throw original;book=new ExcelJS.Workbook();await book.xlsx.load(await zip.generateAsync({type:'arraybuffer'}));return book;
+  }catch(e){throw Error('Could not read this Excel workbook. '+(e.message||original.message));}
+ }
+}
+function worksheetRows(sheet){const rows=[],issues=[],rowCount=sheet.rowCount,columnCount=sheet.columnCount;if(rowCount>110000||columnCount>10000)throw Error('The maximum is 110,000 rows and 10,000 columns.');if(rowCount*columnCount>250000)throw Error('This worksheet exceeds the 250,000-cell import limit. Copy a smaller range or use CSV.');sheet.eachRow({includeEmpty:true},(row,r)=>{const cells=[];for(let c=1;c<=columnCount;c++){const v=row.getCell(c).value;let result=v;if(v&&typeof v==='object'){if(v instanceof Date)result={kind:'date',value:v.toISOString()};else if('formula'in v||'sharedFormula'in v){if(v.result===undefined){issues.push(row.getCell(c).address);result={error:'#NO_CACHED_VALUE'};}else result=v.result;}else if(v.error)result={error:v.error};else if(v.richText)result=v.richText.map(x=>x.text).join('');else if(v.text)result=v.text;else result=String(v);}cells.push(result??'');}rows[r-1]=cells;});return {rows,issues};}
 root.WExports={xlsx,word,download,readExcel,worksheetRows,reportRows};
 })(globalThis);
